@@ -165,7 +165,7 @@ def mobilenet_v3_block(input, k_s, expansion_ratio, output_dim, stride, name, is
     return net
 
 
-def mobilenet_v3_small(inputs, classes_num, is_training=True, reuse=None):
+def mobilenet_v3_small(inputs, classes_num, multiplier=1.0, is_training=True, reuse=None):
     end_points = {}
     layers = [
         # ic oc  kw s  nl    se    exp
@@ -187,17 +187,23 @@ def mobilenet_v3_small(inputs, classes_num, is_training=True, reuse=None):
 
     reduction_ratio = 4
     with tf.variable_scope('init', reuse=reuse):
+        # init_conv_out = _make_divisible(16 * multiplier)
         x = _conv_bn_relu(inputs, filters_num=16, kernel_size=3, name='init',
                           use_bias=True, strides=2, is_training=is_training, activation=hard_swish)
 
     with tf.variable_scope("MobilenetV3_small", reuse=reuse):
         for idx, (in_channels, out_channels, kernel_size, stride, activatation, se, exp_size) in enumerate(layers):
+            # in_channels = _make_divisible(in_channels * multiplier)
+            # out_channels = _make_divisible(out_channels * multiplier)
+            # exp_size = _make_divisible(exp_size * multiplier)
             x = mobilenet_v3_block(x, kernel_size, exp_size, out_channels, stride,
                                    "bneck{}".format(idx), is_training=is_training, use_bias=True,
                                    shortcut=(in_channels==out_channels), activatation=activatation,
                                    ratio=reduction_ratio, se=se)
             end_points["bneck{}".format(idx)] = x
 
+        # conv1_in = _make_divisible(96 * multiplier)
+        # conv1_out = _make_divisible(576 * multiplier)
     #     x = _conv_bn_relu(x, filters_num=576, kernel_size=1, name="conv1_out",
     #                       use_bias=True, strides=1, is_training=is_training, activation=hard_swish)
     #
@@ -210,6 +216,8 @@ def mobilenet_v3_small(inputs, classes_num, is_training=True, reuse=None):
     #     end_points["global_pool"] = x
     #
     # with tf.variable_scope('Logits_out', reuse=reuse):
+    #     # conv2_in = _make_divisible(576 * multiplier)
+    #     # conv2_out = _make_divisible(1280 * multiplier)
     #     x = _conv2d_layer(x, filters_num=1280, kernel_size=1, name="conv2", use_bias=True, strides=1)
     #     x = hard_swish(x)
     #     end_points["conv2_out_1x1"] = x
@@ -257,6 +265,7 @@ def gaze_estimate_generator(batch_norm_decay,
 
     # tf.logging.info('net shape: {}'.format(inputs.shape))
     # encoder
+    inputs = tf.split(inputs, [3, 3, 3, 1], axis=-1)
     end_points = {}
     with tf.variable_scope("eyes_processing"):
         left_eye_logits, left_eye_end_points = mobilenet_v3_small(inputs[0], 2, is_training=is_training, reuse=False)
@@ -265,10 +274,12 @@ def gaze_estimate_generator(batch_norm_decay,
         right_eye_logits, right_eye_end_points = mobilenet_v3_small(inputs[1], 2, is_training=is_training, reuse=True)
         right_net = right_eye_end_points['bneck10']
         eye_net = tf.concat([left_net, right_net], axis=3)
-        eye_net = _conv_bn_relu(eye_net, filters_num=48, kernel_size=1, name="pw1",is_training=is_training, use_bias=True)
-        eye_net = _squeeze_excitation_layer(eye_net, out_dim=48, ratio=4, layer_name="eye_conv1_out",
+        eye_net = _conv_bn_relu(eye_net, filters_num=96, kernel_size=1, name="pw1",is_training=is_training, use_bias=True)
+        eye_net = _squeeze_excitation_layer(eye_net, out_dim=96, ratio=4, layer_name="eye_conv1_out",
                                       is_training=is_training, reuse=None)
         eye_net = _conv_bn_relu(eye_net, filters_num=48, kernel_size=1, name="pw2",is_training=is_training, use_bias=True)
+        # eye_net = _conv_bn_relu(eye_net, filters_num=384, kernel_size=2, name='conv2', is_training=is_training,
+        #                           use_bias=True, strides=2, padding='valid')
         end_points["eye_out"] = eye_net
 
     with tf.variable_scope('face_processing'):
@@ -276,25 +287,33 @@ def gaze_estimate_generator(batch_norm_decay,
         face_net = face_end_points['bneck10']
         #face_mask = tf.convert_to_tensor(inputs[3])
         face_mask = _conv_bn_relu(inputs[3], filters_num=4, kernel_size=3, name='mask_conv1',
-                          use_bias=True, strides=2, is_training=is_training, activation=hard_swish)
+                          use_bias=True, strides=3, padding='valid', is_training=is_training, activation=hard_swish)
         face_mask = _conv_bn_relu(face_mask, filters_num=8, kernel_size=3, name='mask_conv2',
-                                  use_bias=True, strides=2, is_training=is_training, activation=hard_swish)
+                                  use_bias=True, strides=2, padding='valid', is_training=is_training, activation=hard_swish)
         face_mask = _conv_bn_relu(face_mask, filters_num=16, kernel_size=3, name='mask_conv3',
-                                  use_bias=True, strides=3, padding='valid', is_training=is_training, activation=hard_swish)
+                                  use_bias=True, strides=2, padding='valid', is_training=is_training,
+                                  activation=hard_swish)
+        face_mask = _conv_bn_relu(face_mask, filters_num=24, kernel_size=2, name='mask_conv4',
+                                  use_bias=True, strides=2, padding='valid', is_training=is_training, activation=hard_swish)
 
         facem_net = tf.concat([face_net, face_mask], axis=3)
-        facem_net = _conv_bn_relu(facem_net, filters_num=48, kernel_size=1, name="pw1", is_training=is_training, use_bias=True)
-        facem_net = _squeeze_excitation_layer(facem_net, out_dim=48, ratio=4, layer_name="facem_conv1_out",
+        facem_net = _conv_bn_relu(facem_net, filters_num=96, kernel_size=1, name="pw1", is_training=is_training, use_bias=True)
+        facem_net = _squeeze_excitation_layer(facem_net, out_dim=96, ratio=4, layer_name="facem_conv1_out",
                                       is_training=is_training, reuse=None)
         facem_net = _conv_bn_relu(facem_net, filters_num=48, kernel_size=1, name="pw2", is_training=is_training, use_bias=True)
+        # facem_net = _conv_bn_relu(facem_net, filters_num=384, kernel_size=2, name='conv2', is_training=is_training,
+        #                          use_bias=True, strides=2, padding='valid')
         end_points["facem_out"] = facem_net
 
     with tf.variable_scope('gaze_estimate'):
         gaze_net = tf.concat([eye_net, facem_net], axis=3)
-        gaze_net = _conv_bn_relu(gaze_net, filters_num=96, kernel_size=1, name="pw1", is_training=is_training, use_bias=True)
-        gaze_net = _squeeze_excitation_layer(gaze_net, out_dim=96, ratio=4, layer_name="conv1_out", reuse=None)
-        logits = _conv2d_layer(gaze_net, filters_num=2, kernel_size=2, name='conv2',
-                                  use_bias=True, strides=2, padding='valid')
+        gaze_net = _conv_bn_relu(gaze_net, filters_num=48, kernel_size=2, name="pw1", is_training=is_training,
+                                 use_bias=True,strides=2, padding='valid')
+        gaze_net = _squeeze_excitation_layer(gaze_net, out_dim=48, ratio=4, layer_name="conv1_out", reuse=None)
+        gaze_net = _conv_bn_relu(gaze_net, filters_num=24, kernel_size=1, name='conv2', is_training=is_training,
+                                  use_bias=True, strides=1, padding='valid')
+        logits = _conv2d_layer(gaze_net, filters_num=2, kernel_size=1, name='conv3',
+                               use_bias=True, strides=1, padding='valid')
         end_points['gaze'] = logits
 
     print('gaze net ', end_points)
@@ -384,9 +403,12 @@ def gaze_estimate_model_fn(features, labels, mode, params):
     tf.identity(learning_rate, name='learning_rate')
     tf.summary.scalar('learning_rate', learning_rate)
 
-    optimizer = tf.train.MomentumOptimizer(
-        learning_rate=learning_rate,
-        momentum=params['momentum'])
+    # optimizer = tf.train.MomentumOptimizer(
+    #     learning_rate=learning_rate,
+    #     momentum=params['momentum'])
+
+    optimizer = tf.train.AdamOptimizer(
+        learning_rate=learning_rate)
 
     # Batch norm requires update ops to be added as a dependency to the train_op
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
